@@ -23,6 +23,8 @@ static const NSString *oauthSignatureMethodName[] = {
 // OAuth version implemented here
 static const NSString *oauthVersion = @"1.0";
 
+static NSInteger compareFunction(NSDictionary *obj1, NSDictionary *obj2, void *context);
+
 
 @implementation ASIHTTPRequest (ASIHTTPRequest_OAuth)
 
@@ -33,11 +35,11 @@ static const NSString *oauthVersion = @"1.0";
 {
     static time_t last_timestamp = -1;
     static NSMutableSet *nonceHistory = nil;
-    
+
     // Make sure we never send the same timestamp and nonce
     if (!nonceHistory)
         nonceHistory = [[NSMutableSet alloc] init];
-    
+
     struct timeval tv;
     NSString *timestamp, *nonce;
     do {
@@ -56,17 +58,17 @@ static const NSString *oauthVersion = @"1.0";
             else
                 nonceBytes[i] = '0' + byte - 52;
         }
-        
+
         timestamp = [NSString stringWithFormat:@"%d", tv.tv_sec];
         nonce = [NSString stringWithFormat:@"%.16s", nonceBytes];
     } while ((tv.tv_sec == last_timestamp) && [nonceHistory containsObject:nonce]);
-    
+
     if (tv.tv_sec != last_timestamp) {
         last_timestamp = tv.tv_sec;
         [nonceHistory removeAllObjects];
     }
     [nonceHistory addObject:nonce];
-    
+
     return [NSArray arrayWithObjects:[NSDictionary dictionaryWithObjectsAndKeys:@"oauth_timestamp", @"key", timestamp, @"value", nil], [NSDictionary dictionaryWithObjectsAndKeys:@"oauth_nonce", @"key", nonce, @"value", nil], nil];
 }
 
@@ -87,7 +89,7 @@ static const NSString *oauthVersion = @"1.0";
     } else {
         hostString = [NSString stringWithFormat:@"%@:%@", [[self.url host] lowercaseString], [self.url port]];
     }
-    
+
     // Annoyingly [self.url path] is decoded and has trailing slashes stripped, so we have to manually extract the path without the query or fragment
     NSString *pathString = [[self.url absoluteString] substringFromIndex:[[self.url scheme] length] + 3];
     NSRange pathStart = [pathString rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]];
@@ -97,7 +99,7 @@ static const NSString *oauthVersion = @"1.0";
     } else {
         pathString = [pathString substringFromIndex:pathStart.location];
     }
-    
+
     return [NSString stringWithFormat:@"%@://%@%@", [[self.url scheme] lowercaseString], hostString, pathString];
 }
 
@@ -140,22 +142,15 @@ static const NSString *oauthVersion = @"1.0";
             && ![key isEqualToString:@"oauth_signature"])
             [parameters addObject:[NSDictionary dictionaryWithObjectsAndKeys:[key encodeForURL], @"key", [[param objectForKey:@"value"] encodeForURL], @"value", nil]];
     }
-    
+
     // Add encoded counterparts of any additional parameters from the body
     NSArray *postBodyParameters = [self oauthPostBodyParameters];
     for (NSDictionary *param in postBodyParameters)
         [parameters addObject:[NSDictionary dictionaryWithObjectsAndKeys:[[param objectForKey:@"key"] encodeForURL], @"key", [[param objectForKey:@"value"]  encodeForURL], @"value", nil]];
-        
-    // Sort by name and value
-    [parameters sortUsingComparator:^(id obj1, id obj2) {
-        NSDictionary *val1 = obj1, *val2 = obj2;
-        NSComparisonResult result = [[val1 objectForKey:@"key"] compare:[val2 objectForKey:@"key"] options:NSLiteralSearch];
-        if (result != NSOrderedSame)
-            return result;
 
-        return [[val1 objectForKey:@"value"] compare:[val2 objectForKey:@"value"] options:NSLiteralSearch];
-    }];
-    
+    // Sort by name and value
+    [parameters sortUsingFunction:compareFunction context:nil];
+
     // Join components together
     NSMutableArray *parameterStrings = [NSMutableArray array];
     for (NSDictionary *parameter in parameters)
@@ -180,9 +175,9 @@ static const NSString *oauthVersion = @"1.0";
                                 withClientSecret:(NSString *)clientSecret
                                   andTokenSecret:(NSString *)tokenSecret
 {
-	
+
     NSString *key = [self oauthGeneratePlaintextSignatureFor:baseString withClientSecret:clientSecret andTokenSecret:tokenSecret];
-    
+
     const char *keyBytes = [key cStringUsingEncoding:NSUTF8StringEncoding];
     const char *baseStringBytes = [baseString cStringUsingEncoding:NSUTF8StringEncoding];
     unsigned char digestBytes[CC_SHA1_DIGEST_LENGTH];
@@ -206,7 +201,7 @@ static const NSString *oauthVersion = @"1.0";
                                  secret:(NSString *)tokenSecret
                             usingMethod:(ASIOAuthSignatureMethod)signatureMethod
 {
-    [self signRequestWithClientIdentifier:clientIdentifier secret:clientSecret tokenIdentifier:tokenIdentifier 
+    [self signRequestWithClientIdentifier:clientIdentifier secret:clientSecret tokenIdentifier:tokenIdentifier
                                    secret:tokenSecret verifier:nil usingMethod:signatureMethod];
 }
 
@@ -218,9 +213,9 @@ static const NSString *oauthVersion = @"1.0";
                             usingMethod:(ASIOAuthSignatureMethod)signatureMethod
 {
     [self buildPostBody];
-    
+
     NSMutableArray *oauthParameters = [NSMutableArray array];
-    
+
     // Add what we know now to the OAuth parameters
     if (self.authenticationRealm)
         [oauthParameters addObject:[NSDictionary dictionaryWithObjectsAndKeys:@"realm", @"key", self.authenticationRealm, @"value", nil]];
@@ -231,14 +226,14 @@ static const NSString *oauthVersion = @"1.0";
     if (verifier != nil)
         [oauthParameters addObject:[NSDictionary dictionaryWithObjectsAndKeys:@"oauth_verifier", @"key", verifier, @"value", nil]];
     [oauthParameters addObject:[NSDictionary dictionaryWithObjectsAndKeys:@"oauth_signature_method", @"key", oauthSignatureMethodName[signatureMethod], @"value", nil]];
-    [oauthParameters addObjectsFromArray:[self oauthGenerateTimestampAndNonce]];    
+    [oauthParameters addObjectsFromArray:[self oauthGenerateTimestampAndNonce]];
     [oauthParameters addObjectsFromArray:[self oauthAdditionalParametersForMethod:signatureMethod]];
-    
+
     // Construct the signature base string
     NSString *baseStringURI = [self oauthBaseStringURI];
     NSString *requestParameterString = [self oauthRequestParameterString:oauthParameters];
     NSString *baseString = [NSString stringWithFormat:@"%@&%@&%@", [[self requestMethod] uppercaseString], [baseStringURI encodeForURL], [requestParameterString encodeForURL]];
-    
+
     // Generate the signature
     NSString *signature;
     switch (signatureMethod) {
@@ -250,13 +245,22 @@ static const NSString *oauthVersion = @"1.0";
             break;
     }
     [oauthParameters addObject:[NSDictionary dictionaryWithObjectsAndKeys:@"oauth_signature", @"key", signature, @"value", nil]];
-    
+
     // Set the Authorization header
     NSMutableArray *oauthHeader = [NSMutableArray array];
     for (NSDictionary *param in oauthParameters)
         [oauthHeader addObject:[NSString stringWithFormat:@"%@=\"%@\"", [[param objectForKey:@"key"] encodeForURL], [[param objectForKey:@"value"] encodeForURL]]];
-    
+
     [self addRequestHeader:@"Authorization" value:[NSString stringWithFormat:@"OAuth %@", [oauthHeader componentsJoinedByString:@", "]]];
 }
 
 @end
+
+static NSInteger compareFunction(NSDictionary *obj1, NSDictionary *obj2, void *context)
+{
+    NSComparisonResult result = [[obj1 objectForKey:@"key"] compare:[obj2 objectForKey:@"key"] options:NSLiteralSearch];
+    if (result != NSOrderedSame)
+        return result;
+
+    return [[obj1 objectForKey:@"value"] compare:[obj2 objectForKey:@"value"] options:NSLiteralSearch];
+}
